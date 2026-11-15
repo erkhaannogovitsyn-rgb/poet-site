@@ -1,111 +1,142 @@
 <?php
-session_start();
+require_once __DIR__ . '/auth.php';
+requireAdmin();
 
-// Разрешаем доступ Супер-админу и Редактору
-if (!isset($_SESSION['admin_logged_in']) || ($_SESSION['role'] !== 'super_admin' && $_SESSION['role'] !== 'editor')) {
-    die("<h2 style='color:red; text-align:center; margin-top:50px; font-family:sans-serif;'>Доступ запрещен. Только для админов и редакторов.</h2>");
+if (!in_array($_SESSION['role'] ?? '', ['super_admin', 'editor'], true)) {
+    http_response_code(403);
+    exit('Доступ запрещён.');
 }
 
-$pdo = new PDO("mysql:host=localhost;dbname=poet_site_db;charset=utf8mb4", "root", "");
 $message = '';
+$error = '';
+$pdo = db();
 
-// 1. ОБРАБОТКА ДОБАВЛЕНИЯ НОВОСТИ С КАРТИНКОЙ
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_news'])) {
-    $title = $_POST['title'];
-    $content = $_POST['content'];
-    $image_name = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrfToken();
 
-    if (isset($_FILES['image']) && $_FILES['image']['error'] == 0) {
-        $allowed = ['jpg', 'jpeg', 'png', 'gif'];
-        $filename = $_FILES['image']['name'];
-        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    if (isset($_POST['add_news'])) {
+        $title = trim((string)($_POST['title'] ?? ''));
+        $content = trim((string)($_POST['content'] ?? ''));
+        $imageName = null;
 
-        if (in_array($ext, $allowed)) {
-            if (!is_dir('uploads')) { mkdir('uploads', 0777, true); }
-            $image_name = uniqid() . '.' . $ext; 
-            move_uploaded_file($_FILES['image']['tmp_name'], 'uploads/' . $image_name);
+        if ($title === '' || $content === '' || mb_strlen($title) > 255) {
+            $error = 'Заполните заголовок и текст новости.';
+        } elseif (isset($_FILES['image']) && $_FILES['image']['error'] !== UPLOAD_ERR_NO_FILE) {
+            $file = $_FILES['image'];
+            $allowedMimeTypes = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/gif' => 'gif',
+                'image/webp' => 'webp',
+            ];
+            $mimeType = $file['error'] === UPLOAD_ERR_OK && $file['size'] <= 5 * 1024 * 1024
+                ? (new finfo(FILEINFO_MIME_TYPE))->file($file['tmp_name'])
+                : false;
+
+            if (!is_string($mimeType) || !isset($allowedMimeTypes[$mimeType])) {
+                $error = 'Загрузите изображение JPG, PNG, GIF или WebP размером до 5 МБ.';
+            } else {
+                $uploadDir = __DIR__ . '/uploads';
+                if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+                    $error = 'Не удалось подготовить папку для изображений.';
+                } else {
+                    $imageName = bin2hex(random_bytes(16)) . '.' . $allowedMimeTypes[$mimeType];
+                    if (!move_uploaded_file($file['tmp_name'], $uploadDir . '/' . $imageName)) {
+                        $error = 'Не удалось сохранить изображение.';
+                    }
+                }
+            }
+        }
+
+        if ($error === '') {
+            $stmt = $pdo->prepare(
+                'INSERT INTO news (title, content, image) VALUES (:title, :content, :image)'
+            );
+            $stmt->execute(['title' => $title, 'content' => $content, 'image' => $imageName]);
+            $message = 'Новость добавлена.';
+        }
+    } elseif (isset($_POST['delete_news'])) {
+        $id = filter_var($_POST['news_id'] ?? null, FILTER_VALIDATE_INT);
+        if ($id) {
+            $stmt = $pdo->prepare('SELECT image FROM news WHERE id = :id');
+            $stmt->execute(['id' => $id]);
+            $imageName = $stmt->fetchColumn();
+            $delete = $pdo->prepare('DELETE FROM news WHERE id = :id');
+            $delete->execute(['id' => $id]);
+            if ($imageName && preg_match('/^[a-f0-9]{32}\.(jpg|png|gif|webp)$/', $imageName)) {
+                $imagePath = __DIR__ . '/uploads/' . $imageName;
+                if (is_file($imagePath)) {
+                    unlink($imagePath);
+                }
+            }
+            $message = 'Новость удалена.';
+        } else {
+            $error = 'Не удалось определить новость для удаления.';
         }
     }
-
-    $stmt = $pdo->prepare("INSERT INTO news (title, content, image, created_at) VALUES (?, ?, ?, NOW())");
-    if ($stmt->execute([$title, $content, $image_name])) {
-        $message = "Новость успешно добавлена!";
-    }
 }
 
-// 2. УДАЛЕНИЕ НОВОСТИ
-if (isset($_GET['delete'])) {
-    $id = (int)$_GET['delete'];
-    $stmt = $pdo->prepare("SELECT image FROM news WHERE id = ?");
-    $stmt->execute([$id]);
-    $img = $stmt->fetchColumn();
-    if ($img && file_exists('uploads/' . $img)) { unlink('uploads/' . $img); }
-
-    $pdo->prepare("DELETE FROM news WHERE id = ?")->execute([$id]);
-    $message = "Новость удалена.";
-}
-
-$news_items = $pdo->query("SELECT * FROM news ORDER BY created_at DESC")->fetchAll();
+$newsItems = $pdo->query('SELECT id, title, content, image, created_at FROM news ORDER BY created_at DESC')->fetchAll();
 ?>
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Управление новостями</title>
     <style>
-        body { font-family: 'Montserrat', sans-serif; background-color: #121411; color: #f4f1ea; padding: 40px; margin: 0; }
-        .container { max-width: 900px; margin: 0 auto; }
-        h1 { color: #7d9472; font-family: 'Caveat', cursive; font-size: 42px; }
-        .nav-links { margin-bottom: 20px; display: flex; justify-content: space-between; }
-        .nav-links a { color: #fff; text-decoration: none; border-bottom: 2px solid #7d9472; padding-bottom: 5px; }
-        
-        .news-form { background: #1e231e; padding: 25px; border-radius: 10px; margin-bottom: 30px; border: 1px solid rgba(255,255,255,0.1); }
-        .news-form input, .news-form textarea { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #7d9472; background: #121411; color: #fff; box-sizing: border-box; }
-        .news-form button { padding: 12px 25px; background: #7d9472; color: #fff; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; }
-        
-        .admin-news-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .admin-news-card { background: #1e231e; padding: 15px; border-radius: 10px; border-left: 4px solid #7d9472; position: relative; }
-        .admin-news-card img { width: 100%; height: 150px; object-fit: cover; border-radius: 5px; margin-bottom: 10px; }
-        .btn-del { position: absolute; top: 15px; right: 15px; background: #ff6b6b; color: #fff; text-decoration: none; padding: 5px 10px; border-radius: 5px; font-size: 12px; }
+        * { box-sizing:border-box; }
+        body { font-family:Arial,sans-serif; background:#121411; color:#f4f1ea; padding:24px; margin:0; }
+        .container { max-width:900px; margin:0 auto; }
+        h1 { color:#7d9472; font-size:34px; }
+        .nav-links { margin-bottom:20px; display:flex; justify-content:space-between; gap:12px; }
+        a { color:#fff; }
+        .news-form,.admin-news-card { background:#1e231e; padding:20px; border-radius:10px; margin-bottom:20px; border:1px solid rgba(255,255,255,.1); }
+        .news-form input,.news-form textarea { width:100%; padding:12px; margin-bottom:12px; border-radius:5px; border:1px solid #7d9472; background:#121411; color:#fff; }
+        button { padding:11px 18px; background:#7d9472; color:#fff; border:0; border-radius:5px; font-weight:bold; cursor:pointer; }
+        .admin-news-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; }
+        .admin-news-card img { width:100%; max-height:220px; object-fit:cover; border-radius:5px; }
+        .msg { color:#bfe2b2; } .err { color:#ff9d9d; }
+        .delete-form { margin-top:12px; } .delete-form button { background:#9c4b4b; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="nav-links">
-            <?php if ($_SESSION['role'] === 'super_admin'): ?>
-                <a href="admin.php">← Назад к заявкам</a>
-            <?php else: ?>
-                <span style="color: #7d9472; font-weight: bold; border-bottom: 2px solid #7d9472; padding-bottom: 5px;">Панель редактора</span>
-            <?php endif; ?>
-            <a href="logout.php" style="color: #ff6b6b; border-color: #ff6b6b;">Выйти</a>
-        </div>
-        
-        <h1>Управление новостями</h1>
-        <?php if ($message): ?><p style="color: #4CAF50;"><?= $message ?></p><?php endif; ?>
-
-        <form class="news-form" method="POST" enctype="multipart/form-data">
-            <input type="text" name="title" placeholder="Заголовок новости" required>
-            <textarea name="content" rows="4" placeholder="Текст новости..." required></textarea>
-            <label style="display:block; margin-bottom:5px; color:#b0b5aa;">Прикрепить картинку или GIF:</label>
-            <input type="file" name="image" accept="image/*">
-            <button type="submit" name="add_news" style="margin-top:15px;">Опубликовать новость</button>
-        </form>
-
-        <h2 style="font-size: 24px; margin-bottom: 20px;">Опубликованные новости:</h2>
+<main class="container">
+    <nav class="nav-links">
+        <?php if (($_SESSION['role'] ?? '') === 'super_admin'): ?><a href="admin.php">← Подписчики</a><?php endif; ?>
+        <a href="logout.php">Выйти</a>
+    </nav>
+    <h1>Управление новостями</h1>
+    <?php if ($message !== ''): ?><p class="msg" role="status"><?= htmlspecialchars($message, ENT_QUOTES, 'UTF-8') ?></p><?php endif; ?>
+    <?php if ($error !== ''): ?><p class="err" role="alert"><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></p><?php endif; ?>
+    <form class="news-form" method="POST" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+        <input type="text" name="title" maxlength="255" placeholder="Заголовок новости" required>
+        <textarea name="content" rows="4" placeholder="Текст новости..." required></textarea>
+        <label for="image">Изображение (до 5 МБ, необязательно)</label>
+        <input id="image" type="file" name="image" accept="image/jpeg,image/png,image/gif,image/webp">
+        <button type="submit" name="add_news">Опубликовать новость</button>
+    </form>
+    <h2>Опубликованные новости</h2>
+    <?php if ($newsItems): ?>
         <div class="admin-news-grid">
-            <?php foreach ($news_items as $item): ?>
-                <div class="admin-news-card">
-                    <a href="?delete=<?= $item['id'] ?>" class="btn-del" onclick="return confirm('Удалить новость?');">Удалить</a>
-                    <?php if ($item['image']): ?>
-                        <img src="uploads/<?= htmlspecialchars($item['image']) ?>" alt="Фото">
-                    <?php endif; ?>
-                    <h3><?= htmlspecialchars($item['title']) ?></h3>
-                    <p style="font-size: 14px; color: #b0b5aa;"><?= nl2br(htmlspecialchars($item['content'])) ?></p>
-                    <small style="color: #7d9472;"><?= date('d.m.Y', strtotime($item['created_at'])) ?></small>
-                </div>
+            <?php foreach ($newsItems as $item): ?>
+                <article class="admin-news-card">
+                    <?php if ($item['image']): ?><img src="uploads/<?= htmlspecialchars($item['image'], ENT_QUOTES, 'UTF-8') ?>" alt="Изображение новости"><?php endif; ?>
+                    <h3><?= htmlspecialchars($item['title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                    <p><?= nl2br(htmlspecialchars($item['content'], ENT_QUOTES, 'UTF-8')) ?></p>
+                    <small><?= htmlspecialchars(date('d.m.Y', strtotime($item['created_at'])), ENT_QUOTES, 'UTF-8') ?></small>
+                    <form class="delete-form" method="POST" onsubmit="return confirm('Удалить новость?');">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="news_id" value="<?= (int)$item['id'] ?>">
+                        <button type="submit" name="delete_news">Удалить</button>
+                    </form>
+                </article>
             <?php endforeach; ?>
         </div>
-    </div>
+    <?php else: ?>
+        <p>Новостей пока нет.</p>
+    <?php endif; ?>
+</main>
 </body>
 </html>

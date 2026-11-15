@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://poet-showcase--erkhaannogovits.replit.app/sitemap.xml

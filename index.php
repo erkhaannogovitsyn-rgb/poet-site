@@ -1,9 +1,18 @@
+<?php
+require_once __DIR__ . '/db.php';
+$subscriptionStatus = $_GET['subscription'] ?? '';
+if (!in_array($subscriptionStatus, ['success', 'error'], true)) {
+    $subscriptionStatus = '';
+}
+?>
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Роман Старшинов — Стихи</title>
+    <title>Современная поэзия | Стихи Романа Старшинова</title>
+    <meta name="description" content="Читайте современные стихи о жизни, городе и чувствах от поэта Романа Старшинова. Подпишитесь на новые произведения.">
+    <meta name="keywords" content="современная поэзия, стихи про город, Роман Старшинов, стихи о жизни, новые стихи">
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -235,10 +244,14 @@
         
         <div class="news-grid">
             <?php
-            // Подключаемся к БД для вывода новостей
-            $pdo_news = new PDO("mysql:host=localhost;dbname=poet_site_db;charset=utf8mb4", "root", "");
-            $stmt_news = $pdo_news->query("SELECT * FROM news ORDER BY created_at DESC LIMIT 2"); 
-            $news_items = $stmt_news->fetchAll();
+            $news_items = [];
+            $news_database_unavailable = false;
+            try {
+                $stmt_news = db()->query("SELECT * FROM news ORDER BY created_at DESC LIMIT 2");
+                $news_items = $stmt_news->fetchAll();
+            } catch (PDOException $e) {
+                $news_database_unavailable = true;
+            }
             
             if (count($news_items) > 0) {
                 foreach ($news_items as $item) {
@@ -252,6 +265,8 @@
                     echo '<p>' . nl2br(htmlspecialchars($item['content'])) . '</p>';
                     echo '</div></article>';
                 }
+            } elseif ($news_database_unavailable) {
+                echo '<p style="text-align:center; width:100%; color: #b0b5aa;">Раздел новостей временно недоступен.</p>';
             } else {
                 echo '<p style="text-align:center; width:100%; color: #b0b5aa;">Пока новостей нет. Скоро здесь появятся анонсы!</p>';
             }
@@ -291,6 +306,11 @@
         <div class="subscribe-box">
             <h2>Новые стихи — раз в неделю</h2>
             <p>Выберите удобный мессенджер или почту для подписки.</p>
+            <?php if ($subscriptionStatus === 'success'): ?>
+                <p role="status" style="color:#bfe2b2;">Спасибо! Ваша заявка сохранена.</p>
+            <?php elseif ($subscriptionStatus === 'error'): ?>
+                <p role="alert" style="color:#ff9d9d;">Не удалось отправить заявку. Проверьте данные и попробуйте ещё раз.</p>
+            <?php endif; ?>
             
             <form class="subscribe-form" action="send.php" method="POST">
                 
