@@ -1,51 +1,38 @@
 <?php
-// Настройки подключения к базе данных
-$host = 'localhost';
-$dbname = 'poet_site_db';
-$username = 'root';
-$password = ''; // В XAMPP по умолчанию пароль пустой
+require_once __DIR__ . '/db.php';
 
-// Проверяем, что данные пришли через форму
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    if (isset($_POST['privacy_agreed'])) {
-        $method = $_POST['contact_method'];
-        
-        if ($method == 'email') {
-            $contact = $_POST['email'];
-        } elseif ($method == 'telegram') {
-            $contact = $_POST['telegram'];
-        } else {
-            $contact = $_POST['max'];
-        }
-
-        try {
-            // Подключаемся к базе данных с помощью PDO
-            $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-            // Готовим запрос на добавление новой записи
-            $sql = "INSERT INTO leads (created_at, method, contact) VALUES (NOW(), :method, :contact)";
-            $stmt = $pdo->prepare($sql);
-
-            // Выполняем запрос, подставляя данные
-            $stmt->execute([
-                ':method' => $method,
-                ':contact' => $contact
-            ]);
-
-            // Показываем сообщение об успехе
-            echo "<script>
-                    alert('Спасибо! Вы успешно подписались.');
-                    window.location.href = 'index.html';
-                  </script>";
-        } catch (PDOException $e) {
-            // Если произошла ошибка при подключении к БД
-            echo "Ошибка базы данных: " . $e->getMessage();
-        }
-    } else {
-        echo "<script>alert('Ошибка: Необходимо согласие на обработку данных.');</script>";
-    }
-} else {
-    echo "Доступ запрещен.";
+function subscriptionRedirect(string $status): never
+{
+    header('Location: index.php?subscription=' . $status, true, 303);
+    exit;
 }
-?>
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    header('Allow: POST');
+    exit('Метод не поддерживается.');
+}
+
+if (!isset($_POST['privacy_agreed'])) {
+    subscriptionRedirect('error');
+}
+
+$method = (string)($_POST['contact_method'] ?? '');
+$contact = trim((string)($_POST[$method] ?? ''));
+if (!in_array($method, ['email', 'telegram', 'max'], true) || $contact === '' || strlen($contact) > 254) {
+    subscriptionRedirect('error');
+}
+if ($method === 'email' && !filter_var($contact, FILTER_VALIDATE_EMAIL)) {
+    subscriptionRedirect('error');
+}
+
+try {
+    $stmt = db()->prepare(
+        'INSERT INTO leads (method, contact) VALUES (:method, :contact)'
+    );
+    $stmt->execute(['method' => $method, 'contact' => $contact]);
+    subscriptionRedirect('success');
+} catch (Throwable $e) {
+    error_log('Subscription save failed: ' . $e->getMessage());
+    subscriptionRedirect('error');
+}
